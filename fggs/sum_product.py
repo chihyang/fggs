@@ -403,7 +403,7 @@ class SumProduct(torch.autograd.Function):
                     
         # Compute gradients of inputs
         grad_t = multi_mv(jf_inputs, grad_nt, transpose=True)
-        grad_in = tuple(grad_t[el].to_dense() for el, _ in ctx.in_labels)
+        grad_in = tuple(grad_t[el].physical for el, _ in ctx.in_labels)
         
         return (None, None, None, None) + grad_in
 
