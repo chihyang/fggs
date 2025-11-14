@@ -1688,25 +1688,8 @@ def einsum(tensors: Sequence[PatternedTensor],
     compiled = torch_semiring_einsum.compile_equation(equation)
     viewed_tensors = [view for view, paxes in projected_tensors]
     # Optimize the case when we don't need gradient.
-    if all([not vt.requires_grad for vt in viewed_tensors]):
-        (reduced_views, reduced_eq, unsqueeze_index, output_shape) = reduce_equation(compiled, viewed_tensors)
-        out = semiring.einsum(reduced_eq, *reduced_views)
-        out = post_einsum(out, unsqueeze_index, output_shape)
-    else:
-        out = semiring.einsum(compiled, *viewed_tensors)
-    assert(out.dtype == semiring.dtype)
-    pre_out = PatternedTensor(out, output_paxes, output_vaxes, default=zero.item())
-    if pre_out.shape == Size([2, 2]):
-        pre_out_expanded = pre_out.to_dense()
-        if torch.allclose(pre_out_expanded, torch.eye(2)):
-            opaxes = PhysicalAxis(2)
-            return PatternedTensor(torch.tensor(1, dtype=out.dtype).expand(2),
-                                   [opaxes], [opaxes, opaxes],
-                                   default=zero.item())
-        else:
-            return pre_out
-    else:
-        return pre_out
+    out = semiring.einsum(compiled, *viewed_tensors)
+    return PatternedTensor(out, output_paxes, output_vaxes, default=zero.item())
 
 
 def log_viterbi_einsum_forward(tensors: Sequence[PatternedTensor],
