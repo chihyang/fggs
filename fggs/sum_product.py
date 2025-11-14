@@ -463,15 +463,13 @@ class SumProduct(torch.autograd.Function):
         else:
             x0 = MultiTensor(FGGMultiShape(fgg, out_labels), semiring)
             if method == 'fixed-point':
-                fixed_point(lambda x: F(fgg, x, inputs, semiring),
-                            x0, tol=opts['tol'], kmax=opts['kmax'])
-                out = x0
+                out = fixed_point(lambda x: F(fgg, x, inputs, semiring),
+                                  x0, tol=opts['tol'], kmax=opts['kmax'])
             elif method == 'newton':
                 newton(lambda x: F(fgg, x, inputs, semiring),
                        lambda x: J_precompute_products(fgg, x, inputs, semiring)
                        if j_precompute else J(fgg, x, inputs, semiring),
                        x0, tol=opts['tol'], kmax=opts['kmax'])
-                out = x0
             elif method == 'one-step':
                 out = F(fgg, x0, inputs, semiring)
             else:

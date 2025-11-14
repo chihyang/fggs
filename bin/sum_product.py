@@ -117,7 +117,7 @@ if __name__ == '__main__':
         for el, zel in zs.items():
             print(tensor_to_dict_string(args.pretty, fgg, el, zel))
     else:
-        print(tensor_to_dict_string(args.pretty, fgg, fgg.start, z))
+        print(z)
 
     if (args.grad_all or args.grad or args.expect) and len(fgg.factors) > 0:
         f = (z.to_dense() * out_weights).sum()

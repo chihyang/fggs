@@ -490,6 +490,43 @@ class SumAxis(Axis):
                 raise IndexError
         return 0 <= i < n and self.term.index(physical, i)
 
+def project_shape(
+        size: Sequence[int],
+        stride: Sequence[int],
+        offset: int,
+        paxes: Optional[Sequence[PhysicalAxis]],
+        vaxes: Sequence[Axis],
+        subst: Subst) -> Tuple[Sequence[int], Sequence[int], int, Sequence[PhysicalAxis]]:
+    """Extract a view given a tensor's size, stride and storage_offset, so that
+       indexing into the returned tensor according to paxes is equivalent to
+       indexing into the given tensor according to vaxes.
+    """
+    if __debug__:
+        if size != [e.numel() for e in vaxes]:
+            raise ValueError(f"project(tensor of {size}, ..., vaxes of {[e.numel() for e in vaxes]}")
+    if not subst and paxes is None \
+                 and all(isinstance(e, PhysicalAxis) for e in vaxes) \
+                 and len(frozenset(vaxes)) == len(size):
+        # Try to optimize for a common case
+        return (size, stride, offset, cast(Sequence[PhysicalAxis], vaxes))
+    stride_dict : Dict[PhysicalAxis, int] = {}
+    for e, n in zip(vaxes, stride):
+        o, s = e.stride(subst)
+        offset += o * n
+        for k in s: stride_dict[k] = stride_dict.get(k, 0) + s[k] * n
+    if paxes is None:
+        paxes = tuple(stride_dict.keys())
+    else:
+        if __debug__:
+            vaxes_fv = frozenset(stride_dict.keys())
+            paxes_fv = frozenset(paxes)
+            if vaxes_fv != paxes_fv:
+                raise ValueError(f"project(..., paxes with {paxes_fv}, vaxes with {vaxes_fv})")
+    return ([k._numel  for k in paxes],
+            [stride_dict[k] for k in paxes],
+            offset,
+            paxes)
+
 def project(virtual: Tensor,
             paxes: Optional[Sequence[PhysicalAxis]],
             vaxes: Sequence[Axis],
@@ -497,32 +534,14 @@ def project(virtual: Tensor,
     """Extract a view of the given tensor, so that indexing into the returned
        tensor according to paxes is equivalent to indexing into the given
        tensor according to vaxes."""
-    if __debug__:
-        if virtual.size() != Size(e.numel() for e in vaxes):
-            raise ValueError(f"project(tensor of {virtual.size()}, ..., vaxes of {Size(e.numel() for e in vaxes)}")
-    if not subst and paxes is None \
-                 and all(isinstance(e, PhysicalAxis) for e in vaxes) \
-                 and len(frozenset(vaxes)) == virtual.ndim:
-        # Try to optimize for a common case
-        return (virtual, cast(Sequence[PhysicalAxis], vaxes))
-    offset = virtual.storage_offset()
-    stride : Dict[PhysicalAxis, int] = {}
-    for e, n in zip(vaxes, virtual.stride()):
-        o, s = e.stride(subst)
-        offset += o * n
-        for k in s: stride[k] = stride.get(k, 0) + s[k] * n
-    if paxes is None:
-        paxes = tuple(stride.keys())
-    else:
-        if __debug__:
-            vaxes_fv = frozenset(stride.keys())
-            paxes_fv = frozenset(paxes)
-            if vaxes_fv != paxes_fv:
-                raise ValueError(f"project(..., paxes with {paxes_fv}, vaxes with {vaxes_fv})")
-    return (virtual.as_strided(tuple(k._numel  for k in paxes),
-                               tuple(stride[k] for k in paxes),
-                               offset),
-            paxes)
+    (size, stride, offset, paxes) = project_shape(
+        list(virtual.size()),
+        list(virtual.stride()),
+        virtual.storage_offset(),
+        paxes,
+        vaxes,
+        subst)
+    return (virtual.as_strided(size, stride, offset), paxes)
 
 def reshape_or_view(f: Callable[[Tensor, List[int]], Tensor],
                     self: PatternedTensor,
@@ -801,8 +820,21 @@ class PatternedTensor:
             return project(self.physical,
                            cast(Tuple[PhysicalAxis], self.vaxes),
                            self.paxes, {})[0].clone()
-        virtual = self.physical.new_full(self.size(), self.default)
-        project(virtual, self.paxes, self.vaxes, {})[0].copy_(self.physical)
+        # What is the invariant here?
+        # 1. self.physical.shape = pvirtual.shape
+        # 2. virtual should always be larger than self.physical
+        # invariant: len(pstride) = len(stride) <= len(vstride)
+        vshape = list(self.size())
+        vstride = []
+        if len(self.size()) == 0:
+            vstride = []
+        else:
+            vstride = reduce(lambda r, x: [x*r[0]] + r, vshape[-1:0:-1], [1])
+        (shape, stride, offset, _) = project_shape(vshape, vstride, 0, self.paxes, self.vaxes, {})
+
+        virtual = torch.full(vshape, self.default)
+        pvirtual = virtual.as_strided(shape, stride, offset)
+        pvirtual.copy_(self.physical)
         return virtual
 
     def project(self, paxes: Sequence[PhysicalAxis], vaxes: Sequence[Axis]) -> Tensor:
