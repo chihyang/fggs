@@ -537,7 +537,7 @@ def project(virtual: Tensor,
     (size, stride, offset, paxes) = project_shape(
         list(virtual.size()),
         list(virtual.stride()),
-        virtual.storage_offset(),
+        int(virtual.storage_offset()),
         paxes,
         vaxes,
         subst)
@@ -825,7 +825,7 @@ class PatternedTensor:
         # 2. virtual should always be larger than self.physical
         # invariant: len(pstride) = len(stride) <= len(vstride)
         vshape = list(self.size())
-        vstride = []
+        vstride : List[int] = []
         if len(self.size()) == 0:
             vstride = []
         else:

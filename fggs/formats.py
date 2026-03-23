@@ -342,7 +342,11 @@ def graph_to_tikz(g: Graph, factor_formats=None, lhs=None):
     # Convert to DOT just to get layout information
     dot = graph_to_dot(g, factor_formats, lhs)
     # print(dot.to_string())
-    dot = pydot.graph_from_dot_data(dot.create_dot().decode('utf8'))[0]
+    rst = pydot.graph_from_dot_data(dot.create_dot().decode('utf8'))
+    if rst is not None:
+        dot = rst[0]
+    else:
+        raise ValueError(f'Invalid graph: {g}')
 
     positions = {}
     def visit(d):
