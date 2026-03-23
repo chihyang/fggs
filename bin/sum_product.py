@@ -116,6 +116,8 @@ if __name__ == '__main__':
     if args.trace:
         for el, zel in zs.items():
             print(tensor_to_dict_string(args.pretty, fgg, el, zel))
+    elif args.grad or args.grad_all:
+        print(tensor_to_dict_string(args.pretty, fgg, fgg.start, z.to_dense()))
     else:
         print(z)
 

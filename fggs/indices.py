@@ -832,7 +832,7 @@ class PatternedTensor:
             vstride = reduce(lambda r, x: [x*r[0]] + r, vshape[-1:0:-1], [1])
         (shape, stride, offset, _) = project_shape(vshape, vstride, 0, self.paxes, self.vaxes, {})
 
-        virtual = torch.full(vshape, self.default)
+        virtual = torch.full(vshape, self.default, dtype=self.physical.dtype)
         pvirtual = virtual.as_strided(shape, stride, offset)
         pvirtual.copy_(self.physical)
         return virtual
