@@ -1688,7 +1688,13 @@ def einsum(tensors: Sequence[PatternedTensor],
     compiled = torch_semiring_einsum.compile_equation(equation)
     viewed_tensors = [view for view, paxes in projected_tensors]
     # Optimize the case when we don't need gradient.
-    out = semiring.einsum(compiled, *viewed_tensors)
+    if all([not vt.requires_grad for vt in viewed_tensors]):
+        (reduced_views, reduced_eq, unsqueeze_index, output_shape) = reduce_equation(compiled, viewed_tensors)
+        out = semiring.einsum(reduced_eq, *reduced_views)
+        out = post_einsum(out, unsqueeze_index, output_shape)
+    else:
+        out = semiring.einsum(compiled, *viewed_tensors)
+    assert(out.dtype == semiring.dtype)
     return PatternedTensor(out, output_paxes, output_vaxes, default=zero.item())
 
 
