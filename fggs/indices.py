@@ -541,7 +541,7 @@ def project(virtual: Tensor,
         paxes,
         vaxes,
         subst)
-    return (virtual.as_strided(size, stride, offset), paxes)
+    return (virtual.as_strided(list(size), list(stride), offset), paxes)
 
 def reshape_or_view(f: Callable[[Tensor, List[int]], Tensor],
                     self: PatternedTensor,
@@ -833,7 +833,7 @@ class PatternedTensor:
         (shape, stride, offset, _) = project_shape(vshape, vstride, 0, self.paxes, self.vaxes, {})
 
         virtual = torch.full(vshape, self.default, dtype=self.physical.dtype)
-        pvirtual = virtual.as_strided(shape, stride, offset)
+        pvirtual = virtual.as_strided(list(shape), list(stride), offset)
         pvirtual.copy_(self.physical)
         return virtual
 
