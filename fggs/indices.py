@@ -1576,7 +1576,7 @@ def reduce_equation(compiled_equation: torch_semiring_einsum.Equation,
 
     # step 2: make sure there is no sum
     # NOTE: we assume that output variable has no duplicates!
-    # DONE: reduce equations with sum
+    # DONE: equations with sum is supported, no need to do this step.
     # if (len(compiled_equation.output_variables) != compiled_equation.num_variables):
     #     return (tensors, compiled_equation, [], output_shape, 1)
 

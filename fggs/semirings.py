@@ -46,7 +46,7 @@ class Semiring(ABC):
         pass
     
     @abstractmethod
-    def scale(self, x: TensorLikeT, y: int) -> TensorLikeT:
+    def scale(self, x: torch.Tensor, y: int) -> torch.Tensor:
         pass
 
     @abstractmethod
@@ -128,8 +128,8 @@ class RealSemiring(Semiring):
         return x.mul(y).nan_to_num_(nan=0., posinf=inf)
     
     @staticmethod
-    def scale(x: TensorLikeT, y: int) -> TensorLikeT:
-        return RealSemiring.mul(x, y)
+    def scale(x: torch.Tensor, y: int) -> torch.Tensor:
+        return x.mul(torch.tensor(y)).nan_to_num_(nan=0., posinf=inf)
 
     @staticmethod
     def star(x: torch.Tensor) -> torch.Tensor:
@@ -207,8 +207,8 @@ class ComplexSemiring(Semiring):
         return x.mul(y).nan_to_num_(nan=0., posinf=inf)
 
     @staticmethod
-    def scale(x: TensorLikeT, y: int) -> TensorLikeT:
-        return ComplexSemiring.mul(x, y)
+    def scale(x: torch.Tensor, y: int) -> torch.Tensor:
+        return x.mul(torch.tensor(y)).nan_to_num_(nan=0., posinf=inf)
 
     @staticmethod
     def star(x: torch.Tensor) -> torch.Tensor:
@@ -299,7 +299,7 @@ class LogSemiring(Semiring):
         return x.add(y).nan_to_num_(nan=-inf, neginf=-inf, posinf=inf)
     
     @staticmethod
-    def scale(x: TensorLikeT, y: int) -> TensorLikeT:
+    def scale(x: torch.Tensor, y: int) -> torch.Tensor:
         return x.add(torch.log(torch.tensor(y))) if y > 0 else torch.full_like(x, -inf)
 
     @staticmethod
@@ -365,7 +365,7 @@ class ViterbiSemiring(Semiring):
         return x.add(y).nan_to_num_(nan=-inf, neginf=-inf, posinf=inf)
     
     @staticmethod
-    def scale(x: TensorLikeT, y: int) -> TensorLikeT:
+    def scale(x: torch.Tensor, y: int) -> torch.Tensor:
         return x if y > 0 else torch.full_like(x, -inf)
 
     def star(self, x: torch.Tensor) -> torch.Tensor:
@@ -413,7 +413,7 @@ class BoolSemiring(Semiring):
         return x.logical_and(y)
     
     @staticmethod
-    def scale(x: TensorLikeT, y: int) -> TensorLikeT:
+    def scale(x: torch.Tensor, y: int) -> torch.Tensor:
         return x if y > 0 else torch.full_like(x, False)
 
     @staticmethod
