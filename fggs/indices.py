@@ -1729,20 +1729,7 @@ def einsum(tensors: Sequence[PatternedTensor],
     else:
         out = semiring.einsum(compiled, *viewed_tensors)
     assert(out.dtype == semiring.dtype)
-    pre_out = PatternedTensor(out, output_paxes, output_vaxes, default=zero.item())
-    if pre_out.shape == Size([2, 2]):
-        compare_type = torch.promote_types(out.dtype, torch.float32)
-        pre_out_expanded = pre_out.to_dense().to(compare_type)
-        if torch.allclose(pre_out_expanded, torch.eye(2, dtype=compare_type)):
-            opaxes = PhysicalAxis(2)
-            return PatternedTensor(torch.tensor(1, dtype=out.dtype).expand(2),
-                                   [opaxes], [opaxes, opaxes],
-                                   default=zero.item())
-        else:
-            return pre_out
-    else:
-        return pre_out
-
+    return PatternedTensor(out, output_paxes, output_vaxes, default=zero.item())
 
 def log_viterbi_einsum_forward(tensors: Sequence[PatternedTensor],
                                inputs: Sequence[Sequence[Any]],
