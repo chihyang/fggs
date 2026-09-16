@@ -1617,11 +1617,14 @@ def reduce_equation(compiled_equation: torch_semiring_einsum.Equation,
     shrinked_vars = set(chain(*shrinked_input_vars))
     # A = Y \ X = X ∪ Y - X
     removed_vars = set(chain(*input_vars)) - shrinked_vars
-    unsqueeze_index = sorted([compiled_equation.output_variables.index(v)
-                              for v in removed_vars])
     # u = w \ A
     shrinked_out_vars = [v for v in compiled_equation.output_variables
                          if v not in removed_vars]
+    # unsqueeze = w ∩ A
+    unsqueeze_vars = [v for v in removed_vars
+                      if v in compiled_equation.output_variables]
+    unsqueeze_index = sorted([compiled_equation.output_variables.index(v)
+                              for v in unsqueeze_vars])
     # v = A \ w
     factor_vars = [v for v in removed_vars
                    if v not in compiled_equation.output_variables]

@@ -7,6 +7,7 @@ from math import inf, nan
 from packaging import version
 import torch
 import torch_semiring_einsum
+from typing import List
 
 def take(n, iter):
     return (x for _, x in zip(range(n), iter))
@@ -533,14 +534,49 @@ class TestPatternedTensor(unittest.TestCase):
             self.assertTEqual(at_most_matrix(a.solve(b, semiring).to_dense()),
                               semiring.solve(a.to_dense(), at_most_matrix(b.to_dense())))
 
-    def test_reduce_equation(self):
-        eq = 'ij,ji->ij'
-        compiled_eq = torch_semiring_einsum.compile_equation(eq)
+    def test_einsum_expand_general(self):
+        eq = 'jki,bka->ib'
 
         si = 2
         sj = 3
-        shapes_a = [[], [1], [sj], [1, 1], [si, 1], [1, sj], [si, sj]]
-        shapes_b = [[], [1], [si], [1, 1], [sj, 1], [1, si], [sj, si]]
+        sk = 5
+        sa = 4
+        sb = 2
+
+        ten_a = [
+            torch.tensor([0.1, 0.2])
+        ]
+
+        ten_b = [
+            torch.tensor([10, 20, 40, 30])
+        ]
+
+        expected_equations = [
+            [
+                "i,a->i"
+            ]
+        ]
+
+        expected_output_shape = [2, 2]
+
+        expected_unsqueeze = [
+            [
+                [1]
+            ]
+        ]
+
+        self.helperTestReduceEquation(
+            eq, ten_a, ten_b, [sj, sk, si], [sb, sk, sa],
+            expected_equations,
+            expected_output_shape,
+            expected_unsqueeze)
+
+
+    def test_einsum_expand_free(self):
+        eq = 'ij,ji->ij'
+
+        si = 2
+        sj = 3
 
         ten_a = [
             torch.tensor(0.1),
@@ -710,17 +746,36 @@ class TestPatternedTensor(unittest.TestCase):
             ]
         ]
 
+        self.helperTestReduceEquation(
+            eq, ten_a, ten_b, [si, sj], [sj, si],
+            expected_equations,
+            expected_output_shape,
+            expected_unsqueeze)
+
+    def helperTestReduceEquation(
+            self,
+            eq : str,
+            ten_a: List[torch.Tensor],
+            ten_b: List[torch.Tensor],
+            ten_a_expand: List[int],
+            ten_b_expand: List[int],
+            expected_equations: List[List[str]],
+            expected_output_shape: List[int],
+            expected_unsqueeze: List[List[int]]):
+
+        compiled_eq = torch_semiring_einsum.compile_equation(eq)
+
         for i, a in enumerate(ten_a):
             a = a.clone()
             for j, b in enumerate(ten_b):
                 b = b.clone()
-                ea = a.expand(si, sj)
-                eb = b.expand(sj, si)
+                ea = a.expand(*ten_a_expand)
+                eb = b.expand(*ten_b_expand)
                 eeq = expected_equations[i][j]
                 eun = expected_unsqueeze[i][j]
                 ref_ceq = torch_semiring_einsum.compile_equation(eeq)
                 (shrinked_tensors, reduced_eq, unsqueeze_index,
-                 output_shape, factor) = reduce_equation(compiled_eq, (ea, eb))
+                 output_shape, factor) = reduce_equation(compiled_eq, [ea, eb])
 
                 self.assertEqual(reduced_eq.input_variables, ref_ceq.input_variables, (a, b))
                 self.assertEqual(reduced_eq.output_variables, ref_ceq.output_variables)
