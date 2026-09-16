@@ -85,7 +85,7 @@ from warnings import warn
 from itertools import zip_longest, chain, count, product, repeat
 from functools import reduce
 from operator import mul
-from math import inf, nan, log, log1p, exp, expm1, isnan, isinf
+from math import inf, nan, log, log1p, exp, expm1, isnan, isinf, prod
 from string import ascii_uppercase
 from sys import float_info#, stderr
 import torch
@@ -1547,27 +1547,45 @@ def unexpanded_shape(t : Tensor) -> Tuple[List[int], List[int], List[int]]:
     return (original_shape, original_stride, index_of_reserved_dim)
 
 
+# Given
+#
+#   einsum(expand(E₁[x₁] → x₁y₁), ⋯, expand(Eₙ[xₙ] → xₙyₙ) → w)
+#
+# We have
+#
+#   expand(f * einsum(E₁[x₁], ⋯, Eₙ[xₙ] → u)[u] → w)
+#
+# where
+#
+# x₁ ⊥ y₁, ⋯, xₙ ⊥ yₙ
+# f = ∏_{i ∈ v} |i|
+# v = Y \ (X ∪ w) = Y \ X \ w = A \ w
+# u = w \ (Y \ X) = w \ A
+# A = Y \ X
+# X = (x₁ ∪ ⋯ ∪ xₙ)
+# Y = (y₁ ∪ ⋯ ∪ yₙ)
 def reduce_equation(compiled_equation: torch_semiring_einsum.Equation,
                     tensors: List[Tensor]) -> Tuple[List[Tensor],
                                                     Equation,
                                                     List[int],
-                                                    List[int]]:
+                                                    List[int],
+                                                    int]:
     # step 1: get the output shape, this will be used as the final expand
     output_shape = compiled_equation.get_sizes(
         tensors, compiled_equation.output_variables)
 
     # step 2: make sure there is no sum
     # NOTE: we assume that output variable has no duplicates!
-    # TODO: how to reduce equations with sum?
-    if (len(compiled_equation.output_variables) != compiled_equation.num_variables):
-        return (tensors, compiled_equation, [], output_shape)
+    # DONE: reduce equations with sum
+    # if (len(compiled_equation.output_variables) != compiled_equation.num_variables):
+    #     return (tensors, compiled_equation, [], output_shape, 1)
 
     # step 3: get the unexpanded shape of all input tensors
     shrinked_shapes, shrinked_strides, reserved_indices = zip(*[unexpanded_shape(t) for t in tensors])
-    original_shapes = [list(t.shape) for t in tensors]
+    original_shapes = tuple([list(t.shape) for t in tensors])
     # return if no input tensor is an expanded tensor
     if shrinked_shapes == original_shapes:
-        return (tensors, compiled_equation, [], output_shape)
+        return (tensors, compiled_equation, [], output_shape, 1)
 
     # step 4: get the shrinked tensor for all input tensors
     shrinked_tensors = [torch.as_strided(t, tuple(s), tuple(d))
@@ -1583,7 +1601,9 @@ def reduce_equation(compiled_equation: torch_semiring_einsum.Equation,
     #
     # which takes a diagonal vector of a square matrix, but in
     # torch_semiring_einsum, it is not allowed.
+    # [x₁y₁, ..., xₙyₙ]
     input_vars = compiled_equation.input_variables
+    # [x₁, ..., xₙ]
     shrinked_input_vars = [[vars[idx] for idx in reserved_index]
                            for vars, reserved_index in
                            zip(input_vars, reserved_indices)]
@@ -1593,12 +1613,20 @@ def reduce_equation(compiled_equation: torch_semiring_einsum.Equation,
     # These variables will be removed from the output, so we need to
     # restore them by invoking torch.unsqueeze with the corresponding
     # dim in order
+    # X = x₁ ∪ ⋯ ∪ xₙ
     shrinked_vars = set(chain(*shrinked_input_vars))
+    # A = Y \ X = X ∪ Y - X
     removed_vars = set(chain(*input_vars)) - shrinked_vars
     unsqueeze_index = sorted([compiled_equation.output_variables.index(v)
                               for v in removed_vars])
+    # u = w \ A
     shrinked_out_vars = [v for v in compiled_equation.output_variables
                          if v not in removed_vars]
+    # v = A \ w
+    factor_vars = [v for v in removed_vars
+                   if v not in compiled_equation.output_variables]
+    factor_shape = compiled_equation.get_sizes(tensors, factor_vars)
+    factor = prod(factor_shape)
 
     # step 7: reduce to a new equation
     paxis_to_char = {}
@@ -1612,12 +1640,15 @@ def reduce_equation(compiled_equation: torch_semiring_einsum.Equation,
         f'{reduced_eq_in}->{reduced_eq_out}')
 
     # step 8: return all information in a tuple
-    return (shrinked_tensors, reduced_eq, unsqueeze_index, output_shape)
+    return (shrinked_tensors, reduced_eq, unsqueeze_index, output_shape, factor)
 
 
 def post_einsum(result: Union[Tensor, LongTensor],
                 unsqueeze_index: List[int],
-                output_shape: List[int]):
+                output_shape: List[int],
+                factor: int,
+                semiring: Semiring):
+    result = semiring.scale(result, factor)
     for v in unsqueeze_index:
         result = result.unsqueeze(v)
     result = result.expand(torch.Size(output_shape))
@@ -1688,7 +1719,12 @@ def einsum(tensors: Sequence[PatternedTensor],
     compiled = torch_semiring_einsum.compile_equation(equation)
     viewed_tensors = [view for view, paxes in projected_tensors]
     # Optimize the case when we don't need gradient.
-    out = semiring.einsum(compiled, *viewed_tensors)
+    if all([not vt.requires_grad for vt in viewed_tensors]):
+        (reduced_views, reduced_eq, unsqueeze_index, output_shape, factor) = reduce_equation(compiled, viewed_tensors)
+        out = semiring.einsum(reduced_eq, *reduced_views)
+        out = post_einsum(out, unsqueeze_index, output_shape, factor, semiring)
+    else:
+        out = semiring.einsum(compiled, *viewed_tensors)
     assert(out.dtype == semiring.dtype)
     pre_out = PatternedTensor(out, output_paxes, output_vaxes, default=zero.item())
     if pre_out.shape == Size([2, 2]):
@@ -1759,7 +1795,13 @@ def log_viterbi_einsum_forward(tensors: Sequence[PatternedTensor],
     #print(equation, file=stderr)
     compiled = torch_semiring_einsum.compile_equation(equation)
     viewed_tensors = [view for view, paxes in projected_tensors]
-    out, ptr = torch_semiring_einsum.log_viterbi_einsum_forward(compiled, *viewed_tensors)
+    if all([not vt.requires_grad for vt in viewed_tensors]):
+        (reduced_views, reduced_eq, unsqueeze_index, output_shape, factor) = reduce_equation(compiled, viewed_tensors)
+        out, ptr = torch_semiring_einsum.log_viterbi_einsum_forward(reduced_eq, *reduced_views)
+        out = post_einsum(out, unsqueeze_index, output_shape, factor, semiring)
+        ptr = post_einsum(ptr, unsqueeze_index, output_shape + [ptr.shape[-1]], factor, semiring)
+    else:
+        out, ptr = torch_semiring_einsum.log_viterbi_einsum_forward(compiled, *viewed_tensors)
     assert(len(output_paxes) == out.ndim == ptr.ndim - 1)
     assert(len(paxis_to_char) == len(output_paxes) + ptr.size(-1))
     paxis_to_ptr = dict(chain(((k, torch.arange(k._numel)

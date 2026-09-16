@@ -720,7 +720,7 @@ class TestPatternedTensor(unittest.TestCase):
                 eun = expected_unsqueeze[i][j]
                 ref_ceq = torch_semiring_einsum.compile_equation(eeq)
                 (shrinked_tensors, reduced_eq, unsqueeze_index,
-                 output_shape) = reduce_equation(compiled_eq, (ea, eb))
+                 output_shape, factor) = reduce_equation(compiled_eq, (ea, eb))
 
                 self.assertEqual(reduced_eq.input_variables, ref_ceq.input_variables, (a, b))
                 self.assertEqual(reduced_eq.output_variables, ref_ceq.output_variables)
@@ -738,7 +738,8 @@ class TestPatternedTensor(unittest.TestCase):
                     reduced_eq,
                     *shrinked_tensors,
                     block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
-                actual_out = post_einsum(actual_out, unsqueeze_index, output_shape)
+                semiring = RealSemiring(dtype=a.dtype, device=a.device)
+                actual_out = post_einsum(actual_out, unsqueeze_index, output_shape, factor, semiring)
                 self.assertTEqual(actual_out, expected_out)
 
 
