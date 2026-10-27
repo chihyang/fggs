@@ -125,7 +125,7 @@ def reduce_equation(compiled_equation: Equation,
     #   [b, d, e]
     # Then the map is
     #   [0 -> -1, 1 -> 0, 2 -> -1, 3 -> 1, 4 -> 2]
-    # Here the order correspond to their positions by first appearance in the
+    # Here the number corresponds to their positions by first appearance in the
     # einsum equation.
     fill_dict = [(i, shrunk_sum_vars.index(v) if v in shrunk_sum_vars else -1)
                  for i, v in enumerate(all_sum_vars)]
