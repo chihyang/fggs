@@ -1,6 +1,6 @@
 import unittest
 import torch
-import torch_semiring_einsum
+from torch_semiring_einsum import einsum, compile_equation, log_viterbi_einsum_forward, AUTOMATIC_BLOCK_SIZE
 from fggs.semirings import RealSemiring, ViterbiSemiring
 from fggs.equation import *
 from typing import List
@@ -41,11 +41,16 @@ class TestEquation(unittest.TestCase):
             ]
         ]
 
-        self.helperTestReduceEquation(
-            eq, ten_a, ten_b, [sj, sk, si], [sb, sk, sa],
-            expected_equations,
-            expected_output_shape,
-            expected_unsqueeze)
+        for i, a in enumerate(ten_a):
+            for j, b in enumerate(ten_b):
+                ea = a.expand(*[sj, sk, si])
+                eb = b.expand(*[sb, sk, sa])
+                self.helperTestReduceEquation(
+                    eq, ea, eb, expected_equations[i][j],
+                    expected_output_shape, expected_unsqueeze[i][j])
+
+                self.helperTestReducedEinsum(
+                    eq, [a, b], [[sj, sk, si], [sb, sk, sa]])
 
 
     def test_einsum_expand_free(self):
@@ -222,74 +227,79 @@ class TestEquation(unittest.TestCase):
             ]
         ]
 
-        self.helperTestReduceEquation(
-            eq, ten_a, ten_b, [si, sj], [sj, si],
-            expected_equations,
-            expected_output_shape,
-            expected_unsqueeze)
+        for i, a in enumerate(ten_a):
+            for j, b in enumerate(ten_b):
+                ea = a.expand(*[si, sj])
+                eb = b.expand(*[sj, si])
+                self.helperTestReduceEquation(
+                    eq, ea, eb, expected_equations[i][j],
+                    expected_output_shape, expected_unsqueeze[i][j])
+
+                self.helperTestReducedEinsum(
+                    eq, [a, b], [[si, sj], [sj, si]])
+
 
     def helperTestReduceEquation(
             self,
-            eq : str,
-            ten_a: List[torch.Tensor],
-            ten_b: List[torch.Tensor],
-            ten_a_expand: List[int],
-            ten_b_expand: List[int],
-            expected_equations: List[List[str]],
+            eq: str,
+            ten_a: torch.Tensor,
+            ten_b: torch.Tensor,
+            expected_equation: str,
             expected_output_shape: List[int],
-            expected_unsqueeze: List[List[int]]):
+            expected_unsqueeze: List[int]):
 
-        compiled_eq = torch_semiring_einsum.compile_equation(eq)
+        compiled_eq = compile_equation(eq)
 
-        for i, a in enumerate(ten_a):
-            a = a.clone()
-            for j, b in enumerate(ten_b):
-                b = b.clone()
-                ea = a.expand(*ten_a_expand)
-                eb = b.expand(*ten_b_expand)
-                eeq = expected_equations[i][j]
-                eun = expected_unsqueeze[i][j]
-                ref_ceq = torch_semiring_einsum.compile_equation(eeq)
-                (shrunk_tensors, reduced_eq, unsqueeze_index,
-                 output_shape, factor_vars, factor) = reduce_equation(compiled_eq, [ea, eb])
+        eeq = expected_equation
+        eun = expected_unsqueeze
+        ref_ceq = compile_equation(eeq)
+        (shrunk_tensors, reduced_eq, unsqueeze_index,
+         output_shape, factor_vars, factor) = reduce_equation(compiled_eq, [ten_a, ten_b])
 
-                self.assertEqual(reduced_eq.input_variables, ref_ceq.input_variables, (a, b))
-                self.assertEqual(reduced_eq.output_variables, ref_ceq.output_variables)
-                self.assertEqual(output_shape, expected_output_shape)
-                for st, dims in zip(shrunk_tensors, reduced_eq.input_variables):
-                    self.assertEqual(st.dim(), len(dims))
-                self.assertEqual(unsqueeze_index, eun)
+        self.assertEqual(reduced_eq.input_variables, ref_ceq.input_variables, (ten_a, ten_b))
+        self.assertEqual(reduced_eq.output_variables, ref_ceq.output_variables)
+        self.assertEqual(output_shape, expected_output_shape)
+        for st, dims in zip(shrunk_tensors, reduced_eq.input_variables):
+            self.assertEqual(st.dim(), len(dims))
+        self.assertEqual(unsqueeze_index, eun)
 
-                expected_out = torch_semiring_einsum.einsum(
-                    compiled_eq,
-                    ea,
-                    eb,
-                    block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
-                actual_out = torch_semiring_einsum.einsum(
-                    reduced_eq,
-                    *shrunk_tensors,
-                    block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
-                semiring = RealSemiring(dtype=a.dtype, device=a.device)
-                actual_out = post_einsum(actual_out, unsqueeze_index, output_shape, factor, semiring)
-                self.assertTEqual(actual_out, expected_out)
 
-                viterbi_expected_out, viterbi_expected_ptr = torch_semiring_einsum.log_viterbi_einsum_forward(
-                    compiled_eq,
-                    ea,
-                    eb,
-                    block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
-                viterbi_actual_out, viterbi_actual_ptr = torch_semiring_einsum.log_viterbi_einsum_forward(
-                    reduced_eq,
-                    *shrunk_tensors,
-                    block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
-                viterbi_semiring = ViterbiSemiring(dtype=a.dtype, device=a.device)
-                viterbi_actual_out = post_einsum(
-                    viterbi_actual_out, unsqueeze_index, output_shape, factor,
-                    viterbi_semiring)
-                viterbi_actual_ptr = post_einsum_argmax(
-                    viterbi_actual_ptr, unsqueeze_index, output_shape, factor_vars)
-                self.assertTEqual(viterbi_actual_out, viterbi_expected_out)
-                self.assertTEqual(viterbi_actual_ptr, viterbi_expected_ptr)
+    def helperTestReducedEinsum(
+            self,
+            eq: str,
+            tens: List[torch.Tensor],
+            ten_expand_shapes: List[List[int]]):
+        compiled_eq = compile_equation(eq)
+
+        tens = [t.clone() for t in tens]
+        expanded_tens = [t.expand(*s) for t, s in zip(tens, ten_expand_shapes)]
+        (shrunk_tensors, reduced_eq, unsqueeze_index,
+         output_shape, factor_vars, factor) = reduce_equation(compiled_eq, expanded_tens)
+
+        expected_out = einsum(
+            compiled_eq, *expanded_tens,
+            block_size=AUTOMATIC_BLOCK_SIZE)
+        actual_out = einsum(
+            reduced_eq, *shrunk_tensors,
+            block_size=AUTOMATIC_BLOCK_SIZE)
+        semiring = RealSemiring(dtype=tens[0].dtype, device=tens[0].device)
+        actual_out = post_einsum(actual_out, unsqueeze_index, output_shape, factor, semiring)
+        self.assertTEqual(actual_out, expected_out)
+
+        viterbi_expected_out, viterbi_expected_ptr = log_viterbi_einsum_forward(
+            compiled_eq, *expanded_tens,
+            block_size=AUTOMATIC_BLOCK_SIZE)
+        viterbi_actual_out, viterbi_actual_ptr = log_viterbi_einsum_forward(
+            reduced_eq, *shrunk_tensors,
+            block_size=AUTOMATIC_BLOCK_SIZE)
+        viterbi_semiring = ViterbiSemiring(dtype=tens[0].dtype, device=tens[0].device)
+        viterbi_actual_out = post_einsum(
+            viterbi_actual_out, unsqueeze_index, output_shape, factor,
+            viterbi_semiring)
+        viterbi_actual_ptr = post_einsum_argmax(
+            viterbi_actual_ptr, unsqueeze_index, output_shape, factor_vars)
+        self.assertTEqual(viterbi_actual_out, viterbi_expected_out)
+        self.assertTEqual(viterbi_actual_ptr, viterbi_expected_ptr)
 
 
 if __name__ == "__main__":
