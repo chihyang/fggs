@@ -6,7 +6,7 @@ from torch_semiring_einsum import Equation, compile_equation
 from math import prod
 from fggs.semirings import Semiring
 
-__all__ = ['reduce_equation', 'post_einsum']
+__all__ = ['reduce_equation', 'post_einsum', 'post_einsum_argmax']
 
 
 def unexpanded_shape(t : Tensor) -> Tuple[List[int], List[int], List[int]]:
@@ -43,6 +43,7 @@ def reduce_equation(compiled_equation: Equation,
                                                     Equation,
                                                     List[int],
                                                     List[int],
+                                                    List[Tuple[int, int]],
                                                     int]:
     # step 1: get the output shape, this will be used as the final expand
     output_shape = compiled_equation.get_sizes(
@@ -53,7 +54,7 @@ def reduce_equation(compiled_equation: Equation,
     original_shapes = tuple(list(t.shape) for t in tensors)
     # return if no input tensor is an expanded tensor
     if shrunk_shapes == original_shapes:
-        return (tensors, compiled_equation, [], output_shape, 1)
+        return (tensors, compiled_equation, [], output_shape, [], 1)
 
     # step 3: get the shrunk tensor for all input tensors
     shrunk_tensors = [torch.as_strided(t, tuple(s), tuple(d))
@@ -69,9 +70,9 @@ def reduce_equation(compiled_equation: Equation,
     #
     # which takes a diagonal vector of a square matrix, but in
     # torch_semiring_einsum, it is not allowed.
-    # [x₁y₁, ..., xₙyₙ]
+    # X ∪ Y = [x₁y₁, ..., xₙyₙ]
     input_vars = compiled_equation.input_variables
-    # [x₁, ..., xₙ]
+    # X = [x₁, ..., xₙ]
     shrunk_input_vars = [[vars[idx] for idx in reserved_index]
                          for vars, reserved_index in
                          zip(input_vars, reserved_indices)]
@@ -109,8 +110,27 @@ def reduce_equation(compiled_equation: Equation,
     reduced_eq_out = ''.join(paxis_to_char[dim] for dim in shrunk_out_vars)
     reduced_eq = compile_equation(f'{reduced_eq_in}->{reduced_eq_out}')
 
+    # X \ u
+    shrunk_sum_vars = sorted(shrunk_vars - set(shrunk_out_vars))
+    all_sum_vars = sorted(shrunk_sum_vars + factor_vars)
+    # This is a dictionary from the original summed dims to the shrunk summed
+    # dims. For a dim that is in the original summed dim but not in the shrunk
+    # summed dim, it returns -1. We need this because by the map, we can know
+    # both the total number of shrunk summed dimensions and the positional
+    # relation between the shrunk summed dimensions and the original summed
+    # dimensions. For example,
+    # The original summed dimensions are
+    #   [a, b, c, d, e]
+    # The shrunk summed dimensions are
+    #   [b, d, e]
+    # Then the map is
+    #   [0 -> -1, 1 -> 0, 2 -> -1, 3 -> 1, 4 -> 2]
+    # Here the order correspond to their positions by first appearance in the
+    # einsum equation.
+    fill_dict = [(i, shrunk_sum_vars.index(v) if v in shrunk_sum_vars else -1)
+                 for i, v in enumerate(all_sum_vars)]
     # step 7: return all information in a tuple
-    return (shrunk_tensors, reduced_eq, unsqueeze_index, output_shape, factor)
+    return (shrunk_tensors, reduced_eq, unsqueeze_index, output_shape, fill_dict, factor)
 
 
 def post_einsum(result: Union[Tensor, LongTensor],
@@ -125,3 +145,19 @@ def post_einsum(result: Union[Tensor, LongTensor],
     return result
 
 
+def post_einsum_argmax(ptr: Union[Tensor, LongTensor],
+                       unsqueeze_index: List[int],
+                       output_shape: List[int],
+                       factor_vars: List[Tuple[int, int]]):
+    if factor_vars:
+        shrunk_result_shape = ptr.shape[:-1] + (len(factor_vars),)
+        result = torch.zeros(torch.Size(shrunk_result_shape), dtype=ptr.dtype)
+        indices, _ = zip(*filter(lambda v: v[1] >= 0, factor_vars))
+        result[..., indices] = ptr
+    else:
+        result = ptr
+    for v in unsqueeze_index:
+        result = result.unsqueeze(v)
+    argmax_shape = output_shape + [result.shape[-1]]
+    result = result.expand(torch.Size(argmax_shape))
+    return result

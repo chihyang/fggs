@@ -1,7 +1,7 @@
 import unittest
 import torch
 import torch_semiring_einsum
-from fggs.semirings import RealSemiring
+from fggs.semirings import RealSemiring, ViterbiSemiring
 from fggs.equation import *
 from typing import List
 
@@ -251,7 +251,7 @@ class TestEquation(unittest.TestCase):
                 eun = expected_unsqueeze[i][j]
                 ref_ceq = torch_semiring_einsum.compile_equation(eeq)
                 (shrunk_tensors, reduced_eq, unsqueeze_index,
-                 output_shape, factor) = reduce_equation(compiled_eq, [ea, eb])
+                 output_shape, factor_vars, factor) = reduce_equation(compiled_eq, [ea, eb])
 
                 self.assertEqual(reduced_eq.input_variables, ref_ceq.input_variables, (a, b))
                 self.assertEqual(reduced_eq.output_variables, ref_ceq.output_variables)
@@ -272,6 +272,25 @@ class TestEquation(unittest.TestCase):
                 semiring = RealSemiring(dtype=a.dtype, device=a.device)
                 actual_out = post_einsum(actual_out, unsqueeze_index, output_shape, factor, semiring)
                 self.assertTEqual(actual_out, expected_out)
+
+                viterbi_expected_out, viterbi_expected_ptr = torch_semiring_einsum.log_viterbi_einsum_forward(
+                    compiled_eq,
+                    ea,
+                    eb,
+                    block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
+                viterbi_actual_out, viterbi_actual_ptr = torch_semiring_einsum.log_viterbi_einsum_forward(
+                    reduced_eq,
+                    *shrunk_tensors,
+                    block_size=torch_semiring_einsum.AUTOMATIC_BLOCK_SIZE)
+                viterbi_semiring = ViterbiSemiring(dtype=a.dtype, device=a.device)
+                viterbi_actual_out = post_einsum(
+                    viterbi_actual_out, unsqueeze_index, output_shape, factor,
+                    viterbi_semiring)
+                viterbi_actual_ptr = post_einsum_argmax(
+                    viterbi_actual_ptr, unsqueeze_index, output_shape, factor_vars)
+                self.assertTEqual(viterbi_actual_out, viterbi_expected_out)
+                self.assertTEqual(viterbi_actual_ptr, viterbi_expected_ptr)
+
 
 if __name__ == "__main__":
     unittest.main()
