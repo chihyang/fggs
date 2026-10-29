@@ -127,7 +127,9 @@ def reduce_equation(compiled_equation: Equation,
     #   [0 -> -1, 1 -> 0, 2 -> -1, 3 -> 1, 4 -> 2]
     # Here the number corresponds to their positions by first appearance in the
     # einsum equation.
-    fill_dict = [(i, shrunk_sum_vars.index(v) if v in shrunk_sum_vars else -1)
+    reduced_vars_ordered = dict.fromkeys(x for vs in shrunk_input_vars for x in vs)
+    reduced_order = {k: i for i, k in enumerate(reduced_vars_ordered)}
+    fill_dict = [(i, reduced_order[v] if v in shrunk_sum_vars else -1)
                  for i, v in enumerate(all_sum_vars)]
     # step 7: return all information in a tuple
     return (shrunk_tensors, reduced_eq, unsqueeze_index, output_shape, fill_dict, factor)
@@ -152,8 +154,10 @@ def post_einsum_argmax(ptr: Union[Tensor, LongTensor],
     if factor_vars:
         shrunk_result_shape = ptr.shape[:-1] + (len(factor_vars),)
         result = torch.zeros(torch.Size(shrunk_result_shape), dtype=ptr.dtype)
-        indices, _ = zip(*filter(lambda v: v[1] >= 0, factor_vars))
-        result[..., indices] = ptr
+        in_factors = sorted(filter(lambda v: v[1] >= 0, factor_vars),
+                            key=lambda x: x[1])
+        in_indices = [i for i, _ in in_factors]
+        result[..., in_indices] = ptr
     else:
         result = ptr
     for v in unsqueeze_index:

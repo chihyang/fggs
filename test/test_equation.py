@@ -3,12 +3,18 @@ import torch
 from torch_semiring_einsum import einsum, compile_equation, log_viterbi_einsum_forward, AUTOMATIC_BLOCK_SIZE
 from fggs.semirings import RealSemiring, ViterbiSemiring
 from fggs.equation import *
-from typing import List
+import random
+from itertools import chain, combinations, permutations, product
+from typing import List, Tuple
 
 class TestEquation(unittest.TestCase):
 
-    def assertTEqual(self, input: torch.Tensor, other: torch.Tensor) -> None:
-        self.assertTrue(torch.equal(input, other), (input, other))
+    def assertTEqual(self, input: torch.Tensor, other: torch.Tensor,
+                     close: bool) -> None:
+        if close:
+            self.assertTrue(torch.allclose(input, other), (input, other))
+        else:
+            self.assertTrue(torch.equal(input, other), (input, other))
 
     def test_einsum_expand_general(self):
         eq = 'jki,bka->ib'
@@ -50,7 +56,7 @@ class TestEquation(unittest.TestCase):
                     expected_output_shape, expected_unsqueeze[i][j])
 
                 self.helperTestReducedEinsum(
-                    eq, [a, b], [[sj, sk, si], [sb, sk, sa]])
+                    eq, [a, b], [], [[sj, sk, si], [sb, sk, sa]])
 
 
     def test_einsum_expand_free(self):
@@ -236,7 +242,68 @@ class TestEquation(unittest.TestCase):
                     expected_output_shape, expected_unsqueeze[i][j])
 
                 self.helperTestReducedEinsum(
-                    eq, [a, b], [[si, sj], [sj, si]])
+                    eq, [a, b], [], [[si, sj], [sj, si]])
+
+
+    def test_einsum_expand_random(self):
+        # Fix seeds
+        random.seed(0)
+        torch.manual_seed(0)
+        num_vars = 4
+        var_names = [chr(i + ord('a')) for i in range(num_vars)]
+        var_size_min = 2
+        var_size_max = 4
+        num_tensors = 3
+        pick_num_vars = random.choices(range(num_vars), k=num_tensors)
+        var_sizes = random.choices(range(var_size_min, var_size_max), k=num_vars)
+        input_vars = self.helperPickVars(num_vars, pick_num_vars)
+        input_sizes = [[var_sizes[idx] for idx in i]
+                       for i in input_vars]
+        all_input_vars = list(set(input_vars[0]).union(*input_vars[1:]))
+        input_unsqueeze = [self.helperExpandSchema(vs) for vs in input_vars]
+        output_vars = [(list(perm), ())
+                       for r in range(2, len(all_input_vars) + 1)
+                       for perm in permutations(all_input_vars, r)]
+        all_tests = product(*input_unsqueeze, output_vars)
+        for test in all_tests:
+            eq = self.helperMakeEquation(input_vars, test[-1][0], var_names)
+            shrunk_input_vars = [t[0] for t in test[:-1]]
+            unsqueeze_indices = [t[1] for t in test[:-1]]
+            shrunk_input_sizes = [[var_sizes[idx] for idx in si]
+                                  for si in shrunk_input_vars]
+            tens = [torch.rand(sz) for sz in shrunk_input_sizes]
+            self.helperTestReducedEinsum(
+                eq, tens, unsqueeze_indices, input_sizes, close=True)
+
+
+    def helperMakeEquation(self,
+                           inputs: List[List[int]],
+                           outputs: List[int],
+                           var_names: List[str]) -> str:
+        eq_in = ','.join(''.join(var_names[dim] for dim in dims)
+                         for dims in inputs)
+        eq_out = ''.join(var_names[dim] for dim in outputs)
+        eq = f'{eq_in}->{eq_out}'
+        return eq
+
+
+    def helperPickVars(self,
+                       num_vars: int,
+                       pick_num_vars: List[int]) -> List[List[int]]:
+        vars = [random.sample(range(num_vars), k=v) for v in pick_num_vars]
+        return vars
+
+
+    def helperExpandSchema(
+            self,
+            vars: List[int]) -> List[Tuple[List[int], Tuple[int, ...]]]:
+        all_indices = range(len(vars))
+        unsqueeze_indices_pairs = [list(combinations(all_indices, i))
+                                   for i in all_indices]
+        unsqueeze_indices: List[Tuple[int, ...]] = [e for sub in unsqueeze_indices_pairs for e in sub]
+        remaining_indices = [set(all_indices) - set(indices) for indices in unsqueeze_indices]
+        remaining_vars: List[List[int]] = [[vars[r] for r in rs] for rs in remaining_indices]
+        return [([], tuple([*all_indices])), *zip(remaining_vars, unsqueeze_indices)]
 
 
     def helperTestReduceEquation(
@@ -268,11 +335,16 @@ class TestEquation(unittest.TestCase):
             self,
             eq: str,
             tens: List[torch.Tensor],
-            ten_expand_shapes: List[List[int]]):
+            ten_unsqueeze_shapes: List[List[int]],
+            ten_expand_shapes: List[List[int]],
+            close: bool = False):
         compiled_eq = compile_equation(eq)
 
         tens = [t.clone() for t in tens]
-        expanded_tens = [t.expand(*s) for t, s in zip(tens, ten_expand_shapes)]
+        for i in range(len(ten_unsqueeze_shapes)):
+            for j in ten_unsqueeze_shapes[i]:
+                tens[i] = tens[i].unsqueeze(j)
+        expanded_tens = [t.expand(s) for t, s in zip(tens, ten_expand_shapes)]
         (shrunk_tensors, reduced_eq, unsqueeze_index,
          output_shape, factor_vars, factor) = reduce_equation(compiled_eq, expanded_tens)
 
@@ -284,7 +356,7 @@ class TestEquation(unittest.TestCase):
             block_size=AUTOMATIC_BLOCK_SIZE)
         semiring = RealSemiring(dtype=tens[0].dtype, device=tens[0].device)
         actual_out = post_einsum(actual_out, unsqueeze_index, output_shape, factor, semiring)
-        self.assertTEqual(actual_out, expected_out)
+        self.assertTEqual(actual_out, expected_out, close)
 
         viterbi_expected_out, viterbi_expected_ptr = log_viterbi_einsum_forward(
             compiled_eq, *expanded_tens,
@@ -298,8 +370,8 @@ class TestEquation(unittest.TestCase):
             viterbi_semiring)
         viterbi_actual_ptr = post_einsum_argmax(
             viterbi_actual_ptr, unsqueeze_index, output_shape, factor_vars)
-        self.assertTEqual(viterbi_actual_out, viterbi_expected_out)
-        self.assertTEqual(viterbi_actual_ptr, viterbi_expected_ptr)
+        self.assertTEqual(viterbi_actual_out, viterbi_expected_out, close)
+        self.assertTEqual(viterbi_actual_ptr, viterbi_expected_ptr, False)
 
 
 if __name__ == "__main__":
