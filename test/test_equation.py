@@ -7,6 +7,12 @@ import random
 from itertools import chain, combinations, permutations, product
 from typing import List, Tuple
 
+# nrand adapted from test_indices
+def nrand(size: List[int]) -> torch.Tensor:
+    s = torch.Size(size)
+    n = s.numel()
+    return torch.zeros(s) if n == 0 else torch.arange(0.42-n, n, 2).view(s)
+
 class TestEquation(unittest.TestCase):
 
     def assertTEqual(self, input: torch.Tensor, other: torch.Tensor,
@@ -246,24 +252,25 @@ class TestEquation(unittest.TestCase):
 
 
     def test_einsum_expand_random(self):
-        # Fix seeds
-        random.seed(0)
-        torch.manual_seed(0)
         num_vars = 4
         var_names = [chr(i + ord('a')) for i in range(num_vars)]
-        var_size_min = 2
-        var_size_max = 4
-        num_tensors = 3
-        pick_num_vars = random.choices(range(num_vars), k=num_tensors)
-        var_sizes = random.choices(range(var_size_min, var_size_max), k=num_vars)
-        input_vars = self.helperPickVars(num_vars, pick_num_vars)
+        var_sizes = [2, 3, 2, 3]
+        input_vars = [[2, 1, 3], [1, 2, 0], [2]]
+        self.helperTestOneEquation(var_names, var_sizes, input_vars)
+
+    def helperTestOneEquation(
+            self,
+            var_names: List[str],
+            var_sizes: List[int],
+            input_vars: List[List[int]]):
         input_sizes = [[var_sizes[idx] for idx in i]
                        for i in input_vars]
         all_input_vars = list(set(input_vars[0]).union(*input_vars[1:]))
         input_unsqueeze = [self.helperExpandSchema(vs) for vs in input_vars]
-        output_vars = [(list(perm), ())
-                       for r in range(2, len(all_input_vars) + 1)
-                       for perm in permutations(all_input_vars, r)]
+        output_vars: List[Tuple[List[int], List[int]]] = [
+            (list(perm), [])
+            for r in range(2, len(all_input_vars) + 1)
+            for perm in permutations(all_input_vars, r)]
         all_tests = product(*input_unsqueeze, output_vars)
         for test in all_tests:
             eq = self.helperMakeEquation(input_vars, test[-1][0], var_names)
@@ -271,7 +278,7 @@ class TestEquation(unittest.TestCase):
             unsqueeze_indices = [t[1] for t in test[:-1]]
             shrunk_input_sizes = [[var_sizes[idx] for idx in si]
                                   for si in shrunk_input_vars]
-            tens = [torch.rand(sz) for sz in shrunk_input_sizes]
+            tens = [nrand(sz) for sz in shrunk_input_sizes]
             self.helperTestReducedEinsum(
                 eq, tens, unsqueeze_indices, input_sizes, close=True)
 
@@ -296,14 +303,14 @@ class TestEquation(unittest.TestCase):
 
     def helperExpandSchema(
             self,
-            vars: List[int]) -> List[Tuple[List[int], Tuple[int, ...]]]:
+            vars: List[int]) -> List[Tuple[List[int], List[int]]]:
         all_indices = range(len(vars))
         unsqueeze_indices_pairs = [list(combinations(all_indices, i))
                                    for i in all_indices]
-        unsqueeze_indices: List[Tuple[int, ...]] = [e for sub in unsqueeze_indices_pairs for e in sub]
+        unsqueeze_indices: List[List[int]] = [list(e) for sub in unsqueeze_indices_pairs for e in sub]
         remaining_indices = [set(all_indices) - set(indices) for indices in unsqueeze_indices]
         remaining_vars: List[List[int]] = [[vars[r] for r in rs] for rs in remaining_indices]
-        return [([], tuple([*all_indices])), *zip(remaining_vars, unsqueeze_indices)]
+        return [([], list(all_indices)), *zip(remaining_vars, unsqueeze_indices)]
 
 
     def helperTestReduceEquation(
